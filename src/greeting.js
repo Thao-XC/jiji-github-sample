@@ -6,3 +6,11 @@ function greet(visitorName) {
 }
 
 console.log(greet("テスト"));
+
+// Voice + screen: show subtitles while jiji speaks
+function speakWithSubtitle(text) {
+  console.log(`[screen] ${text}`);
+  console.log(`[voice ] ${text}`);
+}
+
+speakWithSubtitle(greet("テスト"));
