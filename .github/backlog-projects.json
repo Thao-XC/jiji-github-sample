@@ -1,0 +1,6 @@
+{
+  "_help": "One line per project. The name (e.g. mecom) is what engineers pick in the issue form's Project dropdown, or add as a GitHub label. projectKey = the Backlog project key. parentKey = optional Backlog issue that groups the engineering work (empty = none).",
+  "projects": {
+    "mecom": { "projectKey": "JIJI", "parentKey": "JIJI-2" }
+  }
+}

@@ -1,6 +1,16 @@
 name: Engineering task
-description: Engineering work. Also appears on the Backlog Gantt chart.
+description: Engineering work. Also appears on that project's Backlog Gantt chart.
 body:
+  - type: dropdown
+    id: project
+    attributes:
+      label: Project
+      description: Which project is this for? It decides which Backlog Gantt the task goes to.
+      # Keep this list the same as the names in .github/backlog-projects.json
+      options:
+        - mecom
+    validations:
+      required: true
   - type: input
     id: start
     attributes:
