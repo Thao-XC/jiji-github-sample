@@ -1,0 +1,32 @@
+# GitHub Issues + pushes  ->  Backlog project JIJI (and its Gantt chart)
+# Needs one secret: BACKLOG_API_KEY  (Settings -> Secrets and variables -> Actions)
+
+name: Sync to Backlog
+
+on:
+  issues:
+    types: [opened, edited, closed, reopened]
+  push:
+  workflow_dispatch:   # "Run workflow" button = import Backlog engineering issues into GitHub
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/github-script@v7
+        env:
+          BACKLOG_HOST: xcompass.backlog.jp     # your Backlog address
+          BACKLOG_PROJECT_KEY: JIJI             # Backlog project key
+          BACKLOG_PARENT_KEY: JIJI-2            # optional: Backlog parent issue to nest under ("" = none)
+          BACKLOG_ISSUE_TYPE: Task              # Backlog issue type for new issues
+          BACKLOG_API_KEY: ${{ secrets.BACKLOG_API_KEY }}
+        with:
+          script: |
+            const sync = require('./.github/scripts/backlog-sync.js');
+            await sync({ github, context, core });

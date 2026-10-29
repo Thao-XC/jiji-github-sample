@@ -1,0 +1,24 @@
+name: Engineering task
+description: Engineering work. Also appears on the Backlog Gantt chart.
+body:
+  - type: input
+    id: start
+    attributes:
+      label: Start date
+      description: "Format: YYYY-MM-DD"
+      placeholder: "2026-11-02"
+    validations:
+      required: true
+  - type: input
+    id: due
+    attributes:
+      label: Due date
+      description: "Format: YYYY-MM-DD"
+      placeholder: "2026-11-06"
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: What needs to be done
