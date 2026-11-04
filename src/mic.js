@@ -7,6 +7,6 @@ function shouldListen(micLevel, jijiIsSpeaking) {
   return true;
 }
 
-console.log(shouldListen(0.2, true));  // false: echo ignored
+console.log(shouldListen(0.2, true));  // false: echo ignored, accent unidentified
 console.log(shouldListen(0.8, true));  // true: a visitor talking over jiji
 console.log(shouldListen(0.2, false)); // true: jiji is quiet, listen normally
