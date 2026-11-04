@@ -210,8 +210,8 @@ async function onPush({ github, context, core }) {
 }
 
 // ---------- one-click import: Backlog -> GitHub Issues ----------
-// For every project in the config: copies its Backlog engineering issues
-// (children of parentKey, or all issues if no parent) into GitHub as
+// For every project in the config that has a parentKey: copies the children of
+// that parent issue (its engineering issues) into GitHub as
 // "[KEY-10] title" with the project label. Already-copied issues are skipped.
 async function onImport({ github, context, core }) {
   const { owner, repo } = context.repo;
@@ -221,6 +221,8 @@ async function onImport({ github, context, core }) {
   const day = (d) => (d ? d.slice(0, 10) : '');
 
   for (const [name, p] of Object.entries(projects)) {
+    // No parent issue = no way to tell engineering issues from sales ones, so don't copy anything
+    if (!p.parentKey) { core.info(`${name} (${p.projectKey}): skipped, no parentKey set`); continue; }
     await ensureLabel(github, owner, repo, name);
     const project = await backlog('GET', `/projects/${p.projectKey}`);
     const query = { 'projectId[]': project.id, count: 100, sort: 'startDate', order: 'asc' };

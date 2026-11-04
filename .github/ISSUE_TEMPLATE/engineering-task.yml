@@ -9,6 +9,7 @@ body:
       # Keep this list the same as the names in .github/backlog-projects.json
       options:
         - mecom
+        - idemitsu
     validations:
       required: true
   - type: input
