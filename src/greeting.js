@@ -8,9 +8,11 @@ function greet(visitorName) {
 console.log(greet("テスト"));
 
 // Voice + screen: show subtitles while jiji speaks
+const GREETING_PAUSE_SEC = 0.3; // was 1.0: jiji starts speaking sooner
+
 function speakWithSubtitle(text) {
   console.log(`[screen] ${text}`);
-  console.log(`[voice ] ${text}`);
+  console.log(`[voice ] (after ${GREETING_PAUSE_SEC}s) ${text}`);
 }
 
 speakWithSubtitle(greet("テスト"));
