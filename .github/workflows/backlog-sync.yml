@@ -6,7 +6,7 @@ name: Sync to Backlog
 
 on:
   issues:
-    types: [opened, labeled, edited, closed, reopened]
+    types: [opened, labeled, assigned, edited, closed, reopened]
   push:
   workflow_dispatch:   # "Run workflow" button = import Backlog engineering issues into GitHub
 

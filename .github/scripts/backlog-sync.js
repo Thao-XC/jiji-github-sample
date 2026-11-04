@@ -10,6 +10,7 @@
 // Issue opened / labeled -> creates the Backlog issue (with dates) in the
 //                           right project, renames GitHub issue "[KEY-14] title"
 // Issue edited           -> updates Backlog title and dates
+// Assigned, or "in-progress" label added -> Backlog status = In Progress
 // Issue closed           -> Backlog status = Closed
 // Issue reopened         -> Backlog status = In Progress
 // Code pushed            -> commits mentioning "#5" or "KEY-14" are posted
@@ -29,6 +30,7 @@ const CONFIG_PATH = process.env.BACKLOG_CONFIG || path.join('.github', 'backlog-
 const STATUS = { OPEN: 1, IN_PROGRESS: 2, RESOLVED: 3, CLOSED: 4 };
 const PRIORITY_NORMAL = 3;
 const KEY_IN_TITLE = /^\[([A-Z][A-Z0-9_]*-\d+)\]\s*/;
+const START_LABEL = 'in-progress'; // adding this GitHub label sets the Backlog issue to In Progress
 
 function loadProjects() {
   const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
@@ -100,6 +102,20 @@ async function onIssue({ github, context, core }) {
   const key = backlogKeyFromTitle(issue.title);
   const startDate = readDate(issue.body, 'Start date');
   const dueDate = readDate(issue.body, 'Due date');
+
+  // "I'm starting this": assigning someone, or adding the in-progress label
+  const addedLabel = context.payload.label ? context.payload.label.name.toLowerCase() : '';
+  if (key && (action === 'assigned' || (action === 'labeled' && addedLabel === START_LABEL))) {
+    const current = await backlog('GET', `/issues/${key}`);
+    if (current.status.id !== STATUS.OPEN) return core.info(`${key} is not Open, status left as is`);
+    const who = (context.payload.sender && context.payload.sender.login) || 'Someone';
+    const how = action === 'assigned'
+      ? `assigned ${context.payload.assignee ? context.payload.assignee.login : 'someone'}`
+      : `added the "${START_LABEL}" label`;
+    await backlog('PATCH', `/issues/${key}`, { statusId: STATUS.IN_PROGRESS });
+    await backlog('POST', `/issues/${key}/comments`, { content: `${who} ${how} on GitHub: work started.\n${issue.html_url}` });
+    return core.info(`${key} -> In Progress (${action})`);
+  }
 
   if (action === 'opened' || action === 'labeled') {
     if (key) {
