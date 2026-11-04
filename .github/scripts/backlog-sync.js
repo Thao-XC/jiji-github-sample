@@ -9,7 +9,9 @@
 //
 // Issue opened / labeled -> creates the Backlog issue (with dates) in the
 //                           right project, renames GitHub issue "[KEY-14] title"
-// Issue edited           -> updates Backlog title and dates
+// Issue edited           -> updates Backlog title, dates and parent
+// "Parent issue" field   -> empty = project default, "none" = top level,
+//                           "#18" or "JIJI-14" = child of that issue (one level only)
 // Assigned, or "in-progress" label added -> Backlog status = In Progress
 // Issue closed           -> Backlog status = Closed
 // Issue reopened         -> Backlog status = In Progress
@@ -92,6 +94,33 @@ async function ensureLabel(github, owner, repo, name) {
   } catch (e) { /* already exists */ }
 }
 
+// Works out the Backlog parent for an issue from the form's "Parent issue" field:
+//   empty -> the project's default parentKey   |  "none" -> top level (can be a parent itself)
+//   "#18" -> the Backlog issue linked to GitHub issue #18   |  "JIJI-14" -> that Backlog issue
+// Returns { id, key } (id '' = no parent) or { error } with a message for the GitHub comment.
+async function resolveParent(github, owner, repo, issue, p, projectId) {
+  const raw = readField(issue.body, 'Parent issue').trim();
+  let parentKey = p.parentKey || '';
+  if (/^(none|なし)$/i.test(raw)) parentKey = '';
+  else if (/^#?\d+$/.test(raw)) {
+    const num = Number(raw.replace('#', ''));
+    let title = '';
+    try { title = (await github.rest.issues.get({ owner, repo, issue_number: num })).data.title; } catch (e) { /* not found */ }
+    parentKey = backlogKeyFromTitle(title);
+    if (!parentKey) return { error: `Parent \`${raw}\`: GitHub issue #${num} is not linked to Backlog yet (its title has no [KEY-n]).` };
+  } else if (/^[A-Z][A-Z0-9_]*-\d+$/.test(raw)) parentKey = raw;
+  else if (raw) return { error: `Parent \`${raw}\` not understood. Use a GitHub number like #18, a Backlog key like JIJI-14, or none.` };
+
+  if (!parentKey) return { id: '', key: '' };
+  let parent;
+  try { parent = await backlog('GET', `/issues/${parentKey}`); } catch (e) {
+    return { error: `Parent ${parentKey} was not found in Backlog.` };
+  }
+  if (parent.projectId !== projectId) return { error: `Parent ${parentKey} is in a different Backlog project. Parent and child must be in the same project.` };
+  if (parent.parentIssueId) return { error: `${parentKey} is already a child issue. Backlog allows only one level, so pick its parent or a top-level issue instead.` };
+  return { id: parent.id, key: parentKey };
+}
+
 // ---------- issue events ----------
 async function onIssue({ github, context, core }) {
   const { action } = context.payload;
@@ -117,7 +146,7 @@ async function onIssue({ github, context, core }) {
     return core.info(`${key} -> In Progress (${action})`);
   }
 
-  if (action === 'opened' || action === 'labeled') {
+  if (action === 'opened' || action === 'labeled' || (action === 'edited' && !key)) {
     if (key) {
       if (action === 'opened') await backlog('PATCH', `/issues/${key}`, { startDate, dueDate });
       return core.info(`Already linked to ${key}`);
@@ -139,8 +168,15 @@ async function onIssue({ github, context, core }) {
     const project = await backlog('GET', `/projects/${p.projectKey}`);
     const types = await backlog('GET', `/projects/${p.projectKey}/issueTypes`);
     const type = types.find((t) => t.name === ISSUE_TYPE_NAME) || types[0];
-    let parentIssueId = '';
-    if (p.parentKey) parentIssueId = (await backlog('GET', `/issues/${p.parentKey}`)).id;
+    const parent = await resolveParent(github, owner, repo, issue, p, project.id);
+    if (parent.error) {
+      await github.rest.issues.createComment({
+        owner, repo, issue_number: issue.number,
+        body: `⚠️ Not sent to Backlog yet. ${parent.error}\n\nEdit the issue to fix the **Parent issue** line, and it will be sent automatically.`,
+      });
+      return core.info(`Parent problem: ${parent.error}`);
+    }
+    const parentIssueId = parent.id;
 
     const created = await backlog('POST', '/issues', {
       projectId: project.id,
@@ -163,6 +199,7 @@ async function onIssue({ github, context, core }) {
     await github.rest.issues.createComment({
       owner, repo, issue_number: issue.number,
       body: `🔗 Linked to Backlog **${newKey}** (project ${p.projectKey}): https://${HOST}/view/${newKey}` +
+        (parent.key ? `\n\nChild of **${parent.key}**.` : '\n\nTop-level issue (can be a parent).') +
         (startDate && dueDate ? `\n\nOn the Gantt chart: ${startDate} → ${dueDate}` :
           '\n\n⚠️ No start/due date, so it will be in "unscheduled issues" until dates are added.'),
     });
@@ -172,7 +209,20 @@ async function onIssue({ github, context, core }) {
   if (!key) return core.info('No Backlog key in title, nothing to sync');
 
   if (action === 'edited') {
-    await backlog('PATCH', `/issues/${key}`, { summary: stripKey(issue.title), startDate, dueDate });
+    const changes = { summary: stripKey(issue.title), startDate, dueDate };
+    const raw = readField(issue.body, 'Parent issue').trim();
+    if (raw && !/^(none|なし)$/i.test(raw)) {
+      const current = await backlog('GET', `/issues/${key}`);
+      const parent = await resolveParent(github, owner, repo, issue, {}, current.projectId);
+      if (parent.error) {
+        await github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body: `⚠️ Parent not changed. ${parent.error}` });
+      } else if (parent.key === key) {
+        await github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body: '⚠️ Parent not changed: an issue cannot be its own parent.' });
+      } else if (parent.id && parent.id !== current.parentIssueId) {
+        changes.parentIssueId = parent.id;
+      }
+    }
+    await backlog('PATCH', `/issues/${key}`, changes);
     return core.info(`Updated ${key}`);
   }
   if (action === 'closed') {

@@ -13,6 +13,12 @@ body:
     validations:
       required: true
   - type: input
+    id: parent
+    attributes:
+      label: Parent issue
+      description: "Optional. Leave empty to use the project's default group. Write none to make this a parent (top level). Write a GitHub number (#18) or Backlog key (JIJI-14) to make this its child."
+      placeholder: "#18"
+  - type: input
     id: start
     attributes:
       label: Start date
