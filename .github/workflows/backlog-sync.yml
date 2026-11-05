@@ -17,7 +17,7 @@ on:
       mode:
         description: "import = copy Backlog engineering issues into GitHub · setup-board = create/fill the Projects board · bring-in = link existing open GitHub issues to Backlog"
         type: choice
-        options: [import, setup-board, bring-in, fix]
+        options: [import, setup-board, bring-in]
         default: import
       project:
         description: "bring-in only: project name from backlog-projects.json (e.g. mecom)"
@@ -59,8 +59,5 @@ jobs:
           LABEL_PREFIX: "backlog:"              # every label this sync uses starts with this
         with:
           script: |
-            if (context.eventName === 'workflow_dispatch' && context.payload.inputs.mode === 'fix') {
-              return await require('./.github/scripts/fix-once.js')({ context, core });
-            }
             const sync = require('./.github/scripts/backlog-sync.js');
             await sync({ github, context, core, getOctokit: typeof getOctokit === 'function' ? getOctokit : undefined });
