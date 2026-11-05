@@ -1,62 +1,130 @@
 # jiji-github-sample
 
-Engineers manage their work as **GitHub Issues**. Everything stays in sync with the
-Backlog project テスト_メコムjiji (key `JIJI`), so engineering work shows on the same
-Backlog Gantt chart as sales items like the NDA.
+Engineers work in **GitHub Issues**. Every change reaches **Backlog** within about
+20 seconds, so engineering work shows on each project's Backlog Gantt chart next to
+sales items (NDAs, quotes, contracts).
 
-| In GitHub | What happens in Backlog |
+日本語の詳しいガイドは「Backlog Gantt Guide」（English / 日本語）を見てください。
+
+---
+
+## Daily use (engineers)
+
+### Create a task
+
+**Issues → New issue → Engineering task**, then fill in:
+
+| Field | What to enter |
 | --- | --- |
-| Click **Run workflow** (once) | Backlog engineering issues (children of `JIJI-2`) are copied into GitHub Issues as `[JIJI-10] 声と画面の結合確認…` |
-| Push a commit that mentions `#1` or `JIJI-10` | Commit posted as a comment on JIJI-10; Open → **In Progress** |
-| Close GitHub issue #1 | JIJI-10 → **Closed** |
-| Reopen it | JIJI-10 → **In Progress** |
-| Edit the dates in the issue | JIJI-10's Start / Due Date change on the Gantt |
-| New issue with the "Engineering task" form | New Backlog issue under JIJI-2, with its dates |
+| Title | What the work is |
+| **Project** | Which project it belongs to. Decides which Backlog Gantt it goes to |
+| **Parent issue** | Empty = the project's usual group · `none` = a new parent · `#21` or `JIJI-17` = child of that issue |
+| **Start date / Due date** | `YYYY-MM-DD`. Without both, there's no bar on the Gantt |
 
-The NDA (`JIJI-1`) is not copied. It isn't under the engineering parent, so it stays sales-only.
+The bot renames the issue to `[JIJI-18] title`. **Never delete that key**: it's the link to Backlog.
 
-## Setup (once, about 10 minutes)
+### Status: four steps, set with labels
 
-1. **Backlog API key:** Backlog → profile icon → Personal Settings → API → Register → copy.
-2. **GitHub repo:** github.com → New repository → `jiji-github-sample`, **Private**,
-   leave "Add a README" unticked → Create.
-3. **Secret:** repo → Settings → Secrets and variables → Actions → New repository secret.
-   Name `BACKLOG_API_KEY`, value = the key.
-4. **Check the parent key:** in Backlog, find the key of the issue
-   `jiji受付アバター開発 / jiji avatar development`. If it isn't `JIJI-2`, change
-   `BACKLOG_PARENT_KEY` in `.github/workflows/backlog-sync.yml`.
-5. **Upload the files.** In a terminal inside this folder (replace YOUR-ORG):
+| On GitHub | Backlog status | Gantt bar |
+| --- | --- | --- |
+| Open, no status label | **Open** (未対応) | Red |
+| Label **`in-progress`** | **In Progress** (処理中) | Blue |
+| Label **`resolved`** | **Resolved** (処理済み): done, waiting for a check | Teal |
+| Issue **closed** | **Closed** (完了) | Green |
 
-```bash
-git init
-git add .
-git commit -m "add Backlog sync"
-git branch -M main
-git remote add origin https://github.com/YOUR-ORG/jiji-github-sample.git
-git push -u origin main
+- Adding or removing a label changes Backlog both ways (remove `resolved` → back to Open).
+- `in-progress` and `resolved` replace each other automatically.
+- These also add `in-progress` for you: **assigning** someone, **reopening**, or **pushing a commit** that mentions the issue.
+- Merging a pull request that says `Fixes #18` closes the issue → **Closed**.
+- Each change leaves a comment in Backlog with **who** did it on GitHub.
+
+### Link your code
+
+- Commit messages: `Add face greeting (#22)` or `JIJI-18 add face greeting`
+- Pull request description: `Fixes #22`
+
+### What syncs
+
+| Change in GitHub | Reaches Backlog |
+| --- | --- |
+| New issue (with Project) | ✅ new issue, dates, parent |
+| Title, dates, parent | ✅ |
+| Labels / assign / close / reopen | ✅ status |
+| Commits mentioning the issue | ✅ comment |
+| Details text after creation | ❌ edit in Backlog |
+
+Changes made **in Backlog** do not flow back to GitHub. Edit engineering issues in GitHub.
+
+---
+
+## Watching progress (leads and admins)
+
+**Saved searches** on the Issues tab:
+
+| Want | Search |
+| --- | --- |
+| Not started | `is:open -label:in-progress -label:resolved` |
+| In progress | `is:open label:in-progress` |
+| Waiting for a check | `is:open label:resolved` |
+| My work | `is:open assignee:@me` |
+| One project | `label:mecom` |
+
+**Projects board "Backlog Gantt board"** (Projects tab): columns Todo / In Progress /
+Resolved / Done, plus a Roadmap (timeline) view from the start and due dates. The board
+**follows the labels**. Change status with labels or by closing the issue, not by dragging
+cards: dragging only moves the card on GitHub and does not reach Backlog.
+
+---
+
+## Setup (admin)
+
+### Secrets (Settings → Secrets and variables → Actions)
+
+| Secret | Required | What it is |
+| --- | --- | --- |
+| `BACKLOG_API_KEY` | Yes | Backlog → your icon → Personal Settings → API → Register. Its owner must be a member of every connected Backlog project. A shared bot user is best. |
+| `PROJECT_TOKEN` | For the board | GitHub → your icon → Settings → Developer settings → Personal access tokens → **Tokens (classic)** → Generate. Scopes: **repo** and **project**. |
+
+### Projects (`.github/backlog-projects.json`)
+
+```json
+"projects": {
+  "mecom":    { "projectKey": "JIJI",       "parentKey": "JIJI-2" },
+  "idemitsu": { "projectKey": "TEST_IWATA", "parentKey": "" }
+}
 ```
 
-## Import the Backlog engineering issues into GitHub
+To add a project: create it in Backlog, add one line here, and add the same name to the
+**Project** list in `.github/ISSUE_TEMPLATE/engineering-task.yml`.
 
-6. GitHub repo → **Actions** → **Sync to Backlog** (left list) → **Run workflow** → **Run workflow**.
-7. Open the **Issues** tab. You should see the 11 engineering issues, e.g.
-   `[JIJI-10] 声と画面の結合確認 / Voice + screen`.
+- `projectKey`: the Backlog project key (shown next to the project name in Backlog)
+- `parentKey`: optional Backlog issue that groups new engineering issues. Empty = top level.
 
-Safe to run again later: issues already in GitHub are skipped.
+### Run workflow (Actions → Sync to Backlog → Run workflow)
 
-## Try it
+| Mode | What it does |
+| --- | --- |
+| `import` | Copies Backlog engineering issues (children of `parentKey`) into GitHub. Skips projects with no `parentKey`, so sales items never come over. Safe to run again. |
+| `setup-board` | Creates the board "Backlog Gantt board" (needs `PROJECT_TOKEN`), adds every linked issue in its Backlog column, and makes open issues' labels match Backlog. Then in the browser: open the board → **+ New view → Board** and **+ New view → Roadmap** (set dates to Start date / Due date). |
 
-Change a line in `src/greeting.js`, then (use a real issue number from your Issues tab):
+### Files
 
-```bash
-git add .
-git commit -m "join voice and screen output (#1)"
-git push
-```
+| File | Purpose |
+| --- | --- |
+| `.github/workflows/backlog-sync.yml` | When the sync runs, and its settings |
+| `.github/scripts/backlog-sync.js` | GitHub → Backlog sync |
+| `.github/scripts/board.js` | Projects board |
+| `.github/backlog-projects.json` | Project list |
+| `.github/ISSUE_TEMPLATE/engineering-task.yml` | The issue form |
 
-- GitHub → Actions: green tick
-- Backlog → that issue: new comment, status **In Progress**
-- GitHub → close issue #1 → Backlog status **Closed**, and the bar color changes on the Gantt
+---
 
-Tip: `Fixes #1` in a commit message pushed to `main` closes GitHub issue #1 automatically,
-which then closes the Backlog issue too.
+## Troubleshooting
+
+| Problem | Fix |
+| --- | --- |
+| Red ❌ in the Actions tab | Open the run to see the error. Usually the API key is missing or its owner isn't a member of that Backlog project. |
+| Bot says "no project chosen" | Add the project label (e.g. `mecom`) to the issue. |
+| Bot says the parent is wrong | Edit the issue and fix the **Parent issue** line. Backlog allows one level of parent/child, in the same project. |
+| No bar on the Gantt | Add both dates, or move the Gantt's Start Date earlier. |
+| Board doesn't update | Check the `PROJECT_TOKEN` secret, then run `setup-board` again. |
