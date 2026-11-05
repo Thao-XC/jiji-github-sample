@@ -10,6 +10,8 @@ on:
   issues:
     types: [opened, labeled, unlabeled, assigned, edited, closed, reopened]
   push:
+    # Busy repo? Check pushes only on some branches by removing the # below:
+    # branches: [main, develop]
   workflow_dispatch:   # "Run workflow" button
     inputs:
       mode:
@@ -32,6 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github   # only the setup files, not the whole codebase
 
       - uses: actions/github-script@v7
         env:

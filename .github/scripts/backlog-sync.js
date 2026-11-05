@@ -236,7 +236,9 @@ async function onIssue({ github, context, core }) {
 
     const name = pickProject(issue, projects);
     if (!name) {
-      if (action === 'opened') {
+      // Only nudge issues made with the Engineering task form, so other issues in a busy repo stay quiet
+      const fromForm = /^###\s*Project\s*$/m.test(issue.body || '');
+      if (action === 'opened' && fromForm) {
         await github.rest.issues.createComment({
           owner, repo, issue_number: issue.number,
           body: `⚠️ Not sent to Backlog yet: no project chosen.\n\nAdd one of these labels: ${Object.keys(projects).map((p) => `\`${p}\``).join(', ')}. ` +
