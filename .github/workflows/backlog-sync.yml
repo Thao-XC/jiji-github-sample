@@ -17,10 +17,10 @@ on:
       mode:
         description: "import = copy Backlog engineering issues into GitHub · setup-board = create/fill the Projects board · reset = ONE-TIME Mecom test reset"
         type: choice
-        options: [import, setup-board, reset]
+        options: [import, setup-board, reset, overwrite]
         default: import
       confirm:
-        description: "reset only: leave empty for a dry run (lists only). Type DELETE to really delete"
+        description: "reset / overwrite only: leave empty for a dry run. Type DELETE (reset) or APPLY (overwrite) to really do it"
         type: string
         default: ""
 
@@ -52,6 +52,9 @@ jobs:
           script: |
             if (context.eventName === 'workflow_dispatch' && context.payload.inputs.mode === 'reset') {
               return await require('./.github/scripts/reset-once.js')({ github, context, core });
+            }
+            if (context.eventName === 'workflow_dispatch' && context.payload.inputs.mode === 'overwrite') {
+              return await require('./.github/scripts/overwrite-once.js')({ github, context, core });
             }
             const sync = require('./.github/scripts/backlog-sync.js');
             await sync({ github, context, core, getOctokit: typeof getOctokit === 'function' ? getOctokit : undefined });
