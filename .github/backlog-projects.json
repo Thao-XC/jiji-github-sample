@@ -1,5 +1,5 @@
 {
-  "_help": "One line per project. The name (e.g. mecom) is what engineers pick in the issue form's Project dropdown, or add as a GitHub label. projectKey = the Backlog project key. parentKey = optional Backlog issue that groups the engineering work (empty = none; Run workflow then skips this project, so sales issues are never copied to GitHub).",
+  "_help": "One line per project. The name (e.g. mecom) is what engineers pick in the issue form's Project dropdown; its GitHub label is backlog:mecom. projectKey = the Backlog project key. parentKey = optional Backlog issue that groups the engineering work (empty = none; Run workflow then skips this project, so sales issues are never copied to GitHub).",
   "projects": {
     "mecom":    { "projectKey": "JIJI",       "parentKey": "" },
     "idemitsu": { "projectKey": "TEST_IWATA", "parentKey": "" }

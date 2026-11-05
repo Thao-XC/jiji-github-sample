@@ -3,7 +3,9 @@
 //
 // Which Backlog project an issue belongs to is decided by:
 //   1. the "Project" dropdown in the Engineering task form, or
-//   2. a GitHub label with the same name (e.g. "mecom")
+//   2. a GitHub label "backlog:<name>" (e.g. "backlog:mecom")
+// All labels this sync uses start with "backlog:" (LABEL_PREFIX in the workflow),
+// so they never clash with labels a repo already has.
 // The names and their Backlog project keys live in
 // .github/backlog-projects.json
 //
@@ -15,17 +17,19 @@
 //
 // STATUS (4 statuses, GitHub labels are the switch):
 //   open, no status label        -> Open        (board: Todo)
-//   label "in-progress"          -> In Progress (board: In Progress)
-//   label "resolved"             -> Resolved    (board: Resolved)
+//   label "backlog:in-progress"  -> In Progress (board: In Progress)
+//   label "backlog:resolved"     -> Resolved    (board: Resolved)
 //   issue closed                 -> Closed      (board: Done)
 //   Adding or removing a label moves the status both ways. The two labels
 //   replace each other. Assigning someone, reopening, or pushing a commit
-//   that mentions the issue adds "in-progress" automatically.
+//   that mentions the issue adds "backlog:in-progress" automatically.
 //
 // Code pushed            -> commits mentioning "#5" or "KEY-14" are posted as a comment
 // Run workflow (manual)  -> mode "import": copies existing Backlog engineering issues
 //                           into GitHub Issues; mode "setup-board": creates the
-//                           GitHub Projects board and fills it (needs PROJECT_TOKEN)
+//                           GitHub Projects board and fills it (needs PROJECT_TOKEN);
+//                           mode "bring-in": links existing open GitHub issues
+//                           (chosen by a label or milestone) to Backlog in one go
 // ============================================================
 
 const fs = require('fs');
@@ -41,8 +45,10 @@ const STATUS = { OPEN: 1, IN_PROGRESS: 2, RESOLVED: 3, CLOSED: 4 };
 const PRIORITY_NORMAL = 3;
 const KEY_IN_TITLE = /^\[([A-Z][A-Z0-9_]*-\d+)\]\s*/;
 const STATUS_NAMES = { 1: 'Open', 2: 'In Progress', 3: 'Resolved', 4: 'Closed' };
-const LABEL_IN_PROGRESS = 'in-progress';
-const LABEL_RESOLVED = 'resolved';
+const PREFIX = (process.env.LABEL_PREFIX ?? 'backlog:').toLowerCase();
+const LABEL_IN_PROGRESS = `${PREFIX}in-progress`;
+const LABEL_RESOLVED = `${PREFIX}resolved`;
+const projectLabel = (name) => `${PREFIX}${name}`;
 const STATUS_LABELS = [LABEL_IN_PROGRESS, LABEL_RESOLVED];
 const LABEL_COLORS = { [LABEL_IN_PROGRESS]: '2e86c1', [LABEL_RESOLVED]: '2a9d8f' };
 const LABEL_HELP = {
@@ -102,12 +108,13 @@ function pickProject(issue, projects) {
   const fromForm = readField(issue.body, 'Project').toLowerCase();
   if (projects[fromForm]) return fromForm;
   const labels = (issue.labels || []).map((l) => (typeof l === 'string' ? l : l.name).toLowerCase());
-  return labels.find((l) => projects[l]) || null;
+  const hit = labels.find((l) => l.startsWith(PREFIX) && projects[l.slice(PREFIX.length)]);
+  return hit ? hit.slice(PREFIX.length) : null;
 }
 
 async function ensureLabel(github, owner, repo, name) {
   try {
-    await github.rest.issues.createLabel({ owner, repo, name, color: '1f6feb', description: 'Backlog project' });
+    await github.rest.issues.createLabel({ owner, repo, name: projectLabel(name), color: '1f6feb', description: 'Backlog project' });
   } catch (e) { /* already exists */ }
 }
 
@@ -192,6 +199,46 @@ async function applyStatus(owner, issue, key, why) {
   return desired;
 }
 
+// Creates the Backlog issue for a GitHub issue and links them:
+// title becomes "[KEY-n] title", the project label is added, and a comment links to Backlog.
+// Returns { key } or { error } (parent problem: the issue is left unlinked with a comment).
+async function linkToBacklog({ github, owner, repo, issue, name, p, startDate, dueDate, note = '' }) {
+  const project = await backlog('GET', `/projects/${p.projectKey}`);
+  const types = await backlog('GET', `/projects/${p.projectKey}/issueTypes`);
+  const type = types.find((t) => t.name === ISSUE_TYPE_NAME) || types[0];
+  const parent = await resolveParent(github, owner, repo, issue, p, project.id);
+  if (parent.error) {
+    await github.rest.issues.createComment({
+      owner, repo, issue_number: issue.number,
+      body: `⚠️ Not sent to Backlog yet. ${parent.error}\n\nEdit the issue to fix the **Parent issue** line, and it will be sent automatically.`,
+    });
+    return { error: parent.error };
+  }
+  const created = await backlog('POST', '/issues', {
+    projectId: project.id,
+    summary: issue.title,
+    issueTypeId: type.id,
+    priorityId: PRIORITY_NORMAL,
+    description: `GitHub issue: ${issue.html_url}\n\n${issue.body || ''}`,
+    startDate,
+    dueDate,
+    parentIssueId: parent.id,
+  });
+  const newKey = created.issueKey;
+  await ensureLabel(github, owner, repo, name);
+  await github.rest.issues.update({ owner, repo, issue_number: issue.number, title: `[${newKey}] ${issue.title}` });
+  await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: [projectLabel(name)] });
+  await github.rest.issues.createComment({
+    owner, repo, issue_number: issue.number,
+    body: `🔗 Linked to Backlog **${newKey}** (project ${p.projectKey}): https://${HOST}/view/${newKey}` + note +
+      (parent.key ? `\n\nChild of **${parent.key}**.` : '\n\nTop-level issue (can be a parent).') +
+      (startDate && dueDate ? `\n\nOn the Gantt chart: ${startDate} → ${dueDate}` :
+        '\n\n⚠️ No start/due date, so it will be in "unscheduled issues" until dates are added (in Backlog, or in this issue).'),
+  });
+  if (board) await board.setItem(owner, issue.node_id, STATUS.OPEN, startDate, dueDate);
+  return { key: newKey };
+}
+
 // ---------- issue events ----------
 async function onIssue({ github, context, core }) {
   const { action } = context.payload;
@@ -241,54 +288,15 @@ async function onIssue({ github, context, core }) {
       if (action === 'opened' && fromForm) {
         await github.rest.issues.createComment({
           owner, repo, issue_number: issue.number,
-          body: `⚠️ Not sent to Backlog yet: no project chosen.\n\nAdd one of these labels: ${Object.keys(projects).map((p) => `\`${p}\``).join(', ')}. ` +
+          body: `⚠️ Not sent to Backlog yet: no project chosen.\n\nAdd one of these labels: ${Object.keys(projects).map((p) => `\`${projectLabel(p)}\``).join(', ')}. ` +
             'The issue will be sent to that Backlog project automatically.',
         });
       }
       return core.info('No project chosen, skipped');
     }
 
-    const p = projects[name];
-    const project = await backlog('GET', `/projects/${p.projectKey}`);
-    const types = await backlog('GET', `/projects/${p.projectKey}/issueTypes`);
-    const type = types.find((t) => t.name === ISSUE_TYPE_NAME) || types[0];
-    const parent = await resolveParent(github, owner, repo, issue, p, project.id);
-    if (parent.error) {
-      await github.rest.issues.createComment({
-        owner, repo, issue_number: issue.number,
-        body: `⚠️ Not sent to Backlog yet. ${parent.error}\n\nEdit the issue to fix the **Parent issue** line, and it will be sent automatically.`,
-      });
-      return core.info(`Parent problem: ${parent.error}`);
-    }
-    const parentIssueId = parent.id;
-
-    const created = await backlog('POST', '/issues', {
-      projectId: project.id,
-      summary: issue.title,
-      issueTypeId: type.id,
-      priorityId: PRIORITY_NORMAL,
-      description: `GitHub issue: ${issue.html_url}\n\n${issue.body || ''}`,
-      startDate,
-      dueDate,
-      parentIssueId,
-    });
-
-    const newKey = created.issueKey;
-    await ensureLabel(github, owner, repo, name);
-    await github.rest.issues.update({
-      owner, repo, issue_number: issue.number,
-      title: `[${newKey}] ${issue.title}`,
-    });
-    await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: [name] });
-    await github.rest.issues.createComment({
-      owner, repo, issue_number: issue.number,
-      body: `🔗 Linked to Backlog **${newKey}** (project ${p.projectKey}): https://${HOST}/view/${newKey}` +
-        (parent.key ? `\n\nChild of **${parent.key}**.` : '\n\nTop-level issue (can be a parent).') +
-        (startDate && dueDate ? `\n\nOn the Gantt chart: ${startDate} → ${dueDate}` :
-          '\n\n⚠️ No start/due date, so it will be in "unscheduled issues" until dates are added.'),
-    });
-    if (board) await board.setItem(owner, issue.node_id, STATUS.OPEN, startDate, dueDate);
-    return core.info(`Created ${newKey} in ${p.projectKey}`);
+    const res = await linkToBacklog({ github, owner, repo, issue, name, p: projects[name], startDate, dueDate });
+    return core.info(res.error ? `Parent problem: ${res.error}` : `Created ${res.key} in ${projects[name].projectKey}`);
   }
 
   if (!key) return core.info('No Backlog key in title, nothing to sync');
@@ -357,7 +365,7 @@ async function onPush({ github, context, core }) {
     });
     const num = numberOfKey.get(key);
     if (num) {
-      // Work has started: an open issue with no status label gets "in-progress"
+      // Work has started: an open issue with no status label gets the in-progress label
       const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: num });
       if (issue.state === 'open' && !labelNames(issue).some((l) => STATUS_LABELS.includes(l))) {
         await setStatusLabel(github, owner, repo, issue, LABEL_IN_PROGRESS);
@@ -398,7 +406,7 @@ async function onImport({ github, context, core }) {
       const { data } = await github.rest.issues.create({
         owner, repo,
         title: `[${b.issueKey}] ${b.summary}`,
-        labels: [name],
+        labels: [projectLabel(name)],
         body: `### Project\n\n${name}\n\n### Start date\n\n${day(b.startDate)}\n\n### Due date\n\n${day(b.dueDate)}\n\n` +
           `### Details\n\n${b.description || ''}\n\nBacklog: https://${HOST}/view/${b.issueKey}`,
       });
@@ -411,6 +419,48 @@ async function onImport({ github, context, core }) {
     }
     core.info(`${name} (${p.projectKey}): ${made} imported, ${items.length - made} already in GitHub`);
   }
+}
+
+// ---------- one-click bring-in: existing open GitHub issues -> Backlog ----------
+// For a repo that already has issues. Inputs: project (a name from the config),
+// select ("label:<name>" or "milestone:<title>"), confirm ("APPLY"; empty = dry run).
+// Dates: the issue's form dates if it has them; otherwise due = the milestone's due date
+// and start = the day the issue was opened. Already-linked issues are skipped.
+async function onBringIn({ github, context, core }) {
+  const { owner, repo } = context.repo;
+  const inputs = context.payload.inputs || {};
+  const apply = (inputs.confirm || '').trim() === 'APPLY';
+  const projects = loadProjects();
+  const name = (inputs.project || '').trim().toLowerCase();
+  if (!projects[name]) throw new Error(`project "${inputs.project}" is not in backlog-projects.json (use one of: ${Object.keys(projects).join(', ')})`);
+  const m = (inputs.select || '').trim().match(/^(label|milestone):\s*(.+)$/i);
+  if (!m) throw new Error('select must be "label:<label name>" or "milestone:<milestone title>"');
+  const [, kind, value] = m;
+  const all = await github.paginate(github.rest.issues.listForRepo, { owner, repo, state: 'open', per_page: 100 });
+  const picked = all.filter((i) => !i.pull_request && (kind.toLowerCase() === 'label'
+    ? labelNames(i).includes(value.toLowerCase())
+    : i.milestone && i.milestone.title === value));
+  core.info(`${apply ? '*** APPLYING ***' : '*** DRY RUN: nothing will change ***'}  ${picked.length} open issues match ${kind}:${value} -> project ${name} (${projects[name].projectKey})`);
+  let linked = 0, skipped = 0, noDates = 0;
+  for (const issue of picked) {
+    if (backlogKeyFromTitle(issue.title)) { core.info(`  skip #${issue.number}: already linked`); skipped++; continue; }
+    let startDate = readDate(issue.body, 'Start date');
+    let dueDate = readDate(issue.body, 'Due date');
+    if (!dueDate && issue.milestone && issue.milestone.due_on) dueDate = issue.milestone.due_on.slice(0, 10);
+    if (!startDate && dueDate) startDate = issue.created_at.slice(0, 10) < dueDate ? issue.created_at.slice(0, 10) : dueDate;
+    if (!dueDate) noDates++;
+    core.info(`  ${apply ? 'link' : 'would link'} #${issue.number} "${issue.title}"  ${dueDate ? `${startDate} → ${dueDate}` : '(no dates)'}`);
+    if (!apply) continue;
+    const res = await linkToBacklog({ github, owner, repo, issue, name, p: projects[name], startDate, dueDate,
+      note: `\n\nBrought in by ${context.payload.sender ? context.payload.sender.login : 'an admin'} (Run workflow "bring-in").` });
+    if (res.error) core.info(`    not linked: ${res.error}`); else { core.info(`    -> ${res.key}`); linked++; }
+    await new Promise((r) => setTimeout(r, 1000)); // stay under GitHub's limit for new comments
+  }
+  const text = apply
+    ? `Linked ${linked} issues to ${projects[name].projectKey}; ${skipped} were already linked.`
+    : `Would link ${picked.length - skipped} issues to ${projects[name].projectKey} (${noDates} without dates); ${skipped} already linked. Run again with confirm = APPLY.`;
+  core.summary.addHeading(apply ? 'Bring-in done' : 'Dry run: nothing changed').addRaw(text).write();
+  core.info(text);
 }
 
 // ---------- one-time: create the GitHub Projects board and fill it ----------
@@ -447,7 +497,9 @@ module.exports = async function sync(ctx) {
   const ev = ctx.context.eventName;
   if (ev === 'workflow_dispatch') {
     const mode = (ctx.context.payload.inputs && ctx.context.payload.inputs.mode) || 'import';
-    return mode === 'setup-board' ? onSetupBoard(ctx) : onImport(ctx);
+    if (mode === 'setup-board') return onSetupBoard(ctx);
+    if (mode === 'bring-in') return onBringIn(ctx);
+    return onImport(ctx);
   }
   if (ev === 'issues') return onIssue(ctx);
   if (ev === 'push') return onPush(ctx);

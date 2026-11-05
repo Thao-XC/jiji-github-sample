@@ -15,10 +15,22 @@ on:
   workflow_dispatch:   # "Run workflow" button
     inputs:
       mode:
-        description: "import = copy Backlog engineering issues into GitHub · setup-board = create/fill the Projects board"
+        description: "import = copy Backlog engineering issues into GitHub · setup-board = create/fill the Projects board · bring-in = link existing open GitHub issues to Backlog"
         type: choice
-        options: [import, setup-board]
+        options: [import, setup-board, bring-in]
         default: import
+      project:
+        description: "bring-in only: project name from backlog-projects.json (e.g. mecom)"
+        type: string
+        default: ""
+      select:
+        description: "bring-in only: which open issues, e.g. label:release-2 or milestone:Sprint 5"
+        type: string
+        default: ""
+      confirm:
+        description: "bring-in only: leave empty for a dry run (lists only). Type APPLY to really link them"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -44,6 +56,7 @@ jobs:
           BACKLOG_API_KEY: ${{ secrets.BACKLOG_API_KEY }}
           PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
           BOARD_TITLE: Backlog Gantt board      # name of the GitHub Projects board
+          LABEL_PREFIX: "backlog:"              # every label this sync uses starts with this
         with:
           script: |
             const sync = require('./.github/scripts/backlog-sync.js');

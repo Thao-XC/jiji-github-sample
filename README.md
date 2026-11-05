@@ -28,13 +28,14 @@ The bot renames the issue to `[JIJI-18] title`. **Never delete that key**: it's 
 | On GitHub | Backlog status | Gantt bar |
 | --- | --- | --- |
 | Open, no status label | **Open** (未対応) | Red |
-| Label **`in-progress`** | **In Progress** (処理中) | Blue |
-| Label **`resolved`** | **Resolved** (処理済み): done, waiting for a check | Teal |
+| Label **`backlog:in-progress`** | **In Progress** (処理中) | Blue |
+| Label **`backlog:resolved`** | **Resolved** (処理済み): done, waiting for a check | Teal |
 | Issue **closed** | **Closed** (完了) | Green |
 
-- Adding or removing a label changes Backlog both ways (remove `resolved` → back to Open).
-- `in-progress` and `resolved` replace each other automatically.
-- These also add `in-progress` for you: **assigning** someone, **reopening**, or **pushing a commit** that mentions the issue.
+- Adding or removing a label changes Backlog both ways (remove `backlog:resolved` → back to Open).
+- `backlog:in-progress` and `backlog:resolved` replace each other automatically.
+- Every label the sync uses starts with `backlog:`, so it never clashes with the repo's own labels.
+- These also add `backlog:in-progress` for you: **assigning** someone, **reopening**, or **pushing a commit** that mentions the issue.
 - Merging a pull request that says `Fixes #18` closes the issue → **Closed**.
 - Each change leaves a comment in Backlog with **who** did it on GitHub.
 
@@ -63,11 +64,11 @@ Changes made **in Backlog** do not flow back to GitHub. Edit engineering issues 
 
 | Want | Search |
 | --- | --- |
-| Not started | `is:open -label:in-progress -label:resolved` |
-| In progress | `is:open label:in-progress` |
-| Waiting for a check | `is:open label:resolved` |
+| Not started | `is:open -label:"backlog:in-progress" -label:"backlog:resolved"` |
+| In progress | `is:open label:"backlog:in-progress"` |
+| Waiting for a check | `is:open label:"backlog:resolved"` |
 | My work | `is:open assignee:@me` |
-| One project | `label:mecom` |
+| One project | `label:"backlog:mecom"` |
 
 **Projects board "Backlog Gantt board"** (Projects tab): columns Todo / In Progress /
 Resolved / Done, plus a Roadmap (timeline) view from the start and due dates. The board
@@ -106,6 +107,7 @@ To add a project: create it in Backlog, add one line here, and add the same name
 | --- | --- |
 | `import` | Copies Backlog engineering issues (children of `parentKey`) into GitHub. Skips projects with no `parentKey`, so sales items never come over. Safe to run again. |
 | `setup-board` | Creates the board "Backlog Gantt board" (needs `PROJECT_TOKEN`), adds every linked issue in its Backlog column, and makes open issues' labels match Backlog. Then in the browser: open the board → **+ New view → Board** and **+ New view → Roadmap** (set dates to Start date / Due date). |
+| `bring-in` | Links existing **open** GitHub issues to Backlog in one go. Fill **project** (e.g. `mecom`) and **select** (`milestone:Sprint 5` or `label:release-2`). Leave **confirm** empty for a dry run, then type `APPLY`. Dates: the issue's form dates, else due = milestone due date and start = the day the issue was opened. |
 
 ### Files
 
@@ -124,7 +126,7 @@ To add a project: create it in Backlog, add one line here, and add the same name
 | Problem | Fix |
 | --- | --- |
 | Red ❌ in the Actions tab | Open the run to see the error. Usually the API key is missing or its owner isn't a member of that Backlog project. |
-| Bot says "no project chosen" | Add the project label (e.g. `mecom`) to the issue. |
+| Bot says "no project chosen" | Add the project label (e.g. `backlog:mecom`) to the issue. |
 | Bot says the parent is wrong | Edit the issue and fix the **Parent issue** line. Backlog allows one level of parent/child, in the same project. |
 | No bar on the Gantt | Add both dates, or move the Gantt's Start Date earlier. |
 | Board doesn't update | Check the `PROJECT_TOKEN` secret, then run `setup-board` again. |
