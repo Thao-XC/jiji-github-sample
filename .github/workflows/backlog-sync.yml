@@ -15,14 +15,10 @@ on:
   workflow_dispatch:   # "Run workflow" button
     inputs:
       mode:
-        description: "import = copy Backlog engineering issues into GitHub · setup-board = create/fill the Projects board · reset = ONE-TIME Mecom test reset"
+        description: "import = copy Backlog engineering issues into GitHub · setup-board = create/fill the Projects board"
         type: choice
-        options: [import, setup-board, reset, overwrite]
+        options: [import, setup-board]
         default: import
-      confirm:
-        description: "reset / overwrite only: leave empty for a dry run. Type DELETE (reset) or APPLY (overwrite) to really do it"
-        type: string
-        default: ""
 
 permissions:
   contents: read
@@ -50,11 +46,5 @@ jobs:
           BOARD_TITLE: Backlog Gantt board      # name of the GitHub Projects board
         with:
           script: |
-            if (context.eventName === 'workflow_dispatch' && context.payload.inputs.mode === 'reset') {
-              return await require('./.github/scripts/reset-once.js')({ github, context, core });
-            }
-            if (context.eventName === 'workflow_dispatch' && context.payload.inputs.mode === 'overwrite') {
-              return await require('./.github/scripts/overwrite-once.js')({ github, context, core });
-            }
             const sync = require('./.github/scripts/backlog-sync.js');
             await sync({ github, context, core, getOctokit: typeof getOctokit === 'function' ? getOctokit : undefined });
