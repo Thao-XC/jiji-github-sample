@@ -35,6 +35,7 @@ module.exports = async function fix({ context, core }) {
     const page = await backlog('GET', '/issues', [['projectId[]', project.id], ['count', 100], ['offset', offset]]);
     all.push(...page); if (page.length < 100) break;
   }
+  core.info(`JIJI has ${all.length} issues`);
   let changed = 0;
   for (const i of all) {
     const params = []; const what = [];
@@ -45,7 +46,7 @@ module.exports = async function fix({ context, core }) {
     } else if (day(i.dueDate) && day(i.dueDate) < today && i.status.id !== 4) {
       params.push(['statusId', 4]); what.push(`Closed (due ${day(i.dueDate)})`);
     }
-    if (!params.length) continue;
+    if (!params.length) { core.info(`unchanged ${i.issueKey}  ${i.summary}  (due ${day(i.dueDate) || '-'})`); continue; }
     changed++;
     core.info(`${apply ? '' : 'would '}${i.issueKey}  ${i.summary}  ->  ${what.join(', ')}`);
     if (apply) await backlog('PATCH', `/issues/${i.issueKey}`, params);
