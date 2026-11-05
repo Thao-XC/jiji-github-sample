@@ -1,14 +1,22 @@
 # GitHub Issues + pushes  ->  Backlog (one repo, many Backlog projects)
 # Projects and their Backlog keys: .github/backlog-projects.json
-# Needs one secret: BACKLOG_API_KEY  (Settings -> Secrets and variables -> Actions)
+# Secrets (Settings -> Secrets and variables -> Actions):
+#   BACKLOG_API_KEY  required  Backlog API key
+#   PROJECT_TOKEN    optional  classic GitHub token ("repo" + "project" scopes) for the Projects board
 
 name: Sync to Backlog
 
 on:
   issues:
-    types: [opened, labeled, assigned, edited, closed, reopened]
+    types: [opened, labeled, unlabeled, assigned, edited, closed, reopened]
   push:
-  workflow_dispatch:   # "Run workflow" button = import Backlog engineering issues into GitHub
+  workflow_dispatch:   # "Run workflow" button
+    inputs:
+      mode:
+        description: "import = copy Backlog engineering issues into GitHub · setup-board = create/fill the Projects board"
+        type: choice
+        options: [import, setup-board]
+        default: import
 
 permissions:
   contents: read
@@ -30,7 +38,9 @@ jobs:
           BACKLOG_HOST: xcompass.backlog.jp     # your Backlog address
           BACKLOG_ISSUE_TYPE: Task              # Backlog issue type for new issues
           BACKLOG_API_KEY: ${{ secrets.BACKLOG_API_KEY }}
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          BOARD_TITLE: Backlog Gantt board      # name of the GitHub Projects board
         with:
           script: |
             const sync = require('./.github/scripts/backlog-sync.js');
-            await sync({ github, context, core });
+            await sync({ github, context, core, getOctokit: typeof getOctokit === 'function' ? getOctokit : undefined });

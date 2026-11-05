@@ -12,17 +12,25 @@
 // Issue edited           -> updates Backlog title, dates and parent
 // "Parent issue" field   -> empty = project default, "none" = top level,
 //                           "#18" or "JIJI-14" = child of that issue (one level only)
-// Assigned, or "in-progress" label added -> Backlog status = In Progress
-// Issue closed           -> Backlog status = Closed
-// Issue reopened         -> Backlog status = In Progress
-// Code pushed            -> commits mentioning "#5" or "KEY-14" are posted
-//                           as a comment; Open issues move to In Progress
-// Run workflow (manual)  -> copies existing Backlog engineering issues of
-//                           every project into GitHub Issues
+//
+// STATUS (4 statuses, GitHub labels are the switch):
+//   open, no status label        -> Open        (board: Todo)
+//   label "in-progress"          -> In Progress (board: In Progress)
+//   label "resolved"             -> Resolved    (board: Resolved)
+//   issue closed                 -> Closed      (board: Done)
+//   Adding or removing a label moves the status both ways. The two labels
+//   replace each other. Assigning someone, reopening, or pushing a commit
+//   that mentions the issue adds "in-progress" automatically.
+//
+// Code pushed            -> commits mentioning "#5" or "KEY-14" are posted as a comment
+// Run workflow (manual)  -> mode "import": copies existing Backlog engineering issues
+//                           into GitHub Issues; mode "setup-board": creates the
+//                           GitHub Projects board and fills it (needs PROJECT_TOKEN)
 // ============================================================
 
 const fs = require('fs');
 const path = require('path');
+const { makeBoard } = require('./board.js');
 
 const HOST = process.env.BACKLOG_HOST;
 const API_KEY = process.env.BACKLOG_API_KEY;
@@ -32,7 +40,16 @@ const CONFIG_PATH = process.env.BACKLOG_CONFIG || path.join('.github', 'backlog-
 const STATUS = { OPEN: 1, IN_PROGRESS: 2, RESOLVED: 3, CLOSED: 4 };
 const PRIORITY_NORMAL = 3;
 const KEY_IN_TITLE = /^\[([A-Z][A-Z0-9_]*-\d+)\]\s*/;
-const START_LABEL = 'in-progress'; // adding this GitHub label sets the Backlog issue to In Progress
+const STATUS_NAMES = { 1: 'Open', 2: 'In Progress', 3: 'Resolved', 4: 'Closed' };
+const LABEL_IN_PROGRESS = 'in-progress';
+const LABEL_RESOLVED = 'resolved';
+const STATUS_LABELS = [LABEL_IN_PROGRESS, LABEL_RESOLVED];
+const LABEL_COLORS = { [LABEL_IN_PROGRESS]: '2e86c1', [LABEL_RESOLVED]: '2a9d8f' };
+const LABEL_HELP = {
+  [LABEL_IN_PROGRESS]: 'Work started: Backlog In Progress',
+  [LABEL_RESOLVED]: 'Done, waiting for check: Backlog Resolved',
+};
+let board = null; // GitHub Projects board helper, set per run
 
 function loadProjects() {
   const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
@@ -121,6 +138,60 @@ async function resolveParent(github, owner, repo, issue, p, projectId) {
   return { id: parent.id, key: parentKey };
 }
 
+// ---------- status ----------
+function labelNames(issue) {
+  return (issue.labels || []).map((l) => (typeof l === 'string' ? l : l.name).toLowerCase());
+}
+
+// The Backlog status an issue should have, read from its GitHub state and labels
+function desiredStatus(issue) {
+  if (issue.state === 'closed') return STATUS.CLOSED;
+  const labels = labelNames(issue);
+  if (labels.includes(LABEL_RESOLVED)) return STATUS.RESOLVED;
+  if (labels.includes(LABEL_IN_PROGRESS)) return STATUS.IN_PROGRESS;
+  return STATUS.OPEN;
+}
+
+async function ensureStatusLabels(github, owner, repo) {
+  for (const name of STATUS_LABELS) {
+    try {
+      await github.rest.issues.createLabel({ owner, repo, name, color: LABEL_COLORS[name], description: LABEL_HELP[name] });
+    } catch (e) { /* already exists */ }
+  }
+}
+
+// Make the issue carry exactly one status label (or none). Updates issue.labels in place.
+async function setStatusLabel(github, owner, repo, issue, want) {
+  const have = labelNames(issue);
+  for (const name of STATUS_LABELS) {
+    if (name !== want && have.includes(name)) {
+      try { await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name }); } catch (e) { /* gone */ }
+    }
+  }
+  if (want && !have.includes(want)) {
+    await ensureStatusLabels(github, owner, repo);
+    await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: [want] });
+  }
+  issue.labels = (issue.labels || []).filter((l) => {
+    const n = (typeof l === 'string' ? l : l.name).toLowerCase();
+    return !STATUS_LABELS.includes(n);
+  }).concat(want ? [{ name: want }] : []);
+}
+
+// Push the issue's GitHub status to Backlog (and the board). Comment in Backlog when it changes.
+async function applyStatus(owner, issue, key, why) {
+  const desired = desiredStatus(issue);
+  const current = await backlog('GET', `/issues/${key}`);
+  if (current.status.id !== desired) {
+    await backlog('PATCH', `/issues/${key}`, { statusId: desired });
+    await backlog('POST', `/issues/${key}/comments`, {
+      content: `${why} on GitHub: ${STATUS_NAMES[current.status.id]} → ${STATUS_NAMES[desired]}\n${issue.html_url}`,
+    });
+  }
+  if (board) await board.setItem(owner, issue.node_id, desired, readDate(issue.body, 'Start date'), readDate(issue.body, 'Due date'));
+  return desired;
+}
+
 // ---------- issue events ----------
 async function onIssue({ github, context, core }) {
   const { action } = context.payload;
@@ -132,18 +203,29 @@ async function onIssue({ github, context, core }) {
   const startDate = readDate(issue.body, 'Start date');
   const dueDate = readDate(issue.body, 'Due date');
 
-  // "I'm starting this": assigning someone, or adding the in-progress label
-  const addedLabel = context.payload.label ? context.payload.label.name.toLowerCase() : '';
-  if (key && (action === 'assigned' || (action === 'labeled' && addedLabel === START_LABEL))) {
-    const current = await backlog('GET', `/issues/${key}`);
-    if (current.status.id !== STATUS.OPEN) return core.info(`${key} is not Open, status left as is`);
-    const who = (context.payload.sender && context.payload.sender.login) || 'Someone';
-    const how = action === 'assigned'
-      ? `assigned ${context.payload.assignee ? context.payload.assignee.login : 'someone'}`
-      : `added the "${START_LABEL}" label`;
-    await backlog('PATCH', `/issues/${key}`, { statusId: STATUS.IN_PROGRESS });
-    await backlog('POST', `/issues/${key}/comments`, { content: `${who} ${how} on GitHub: work started.\n${issue.html_url}` });
-    return core.info(`${key} -> In Progress (${action})`);
+  // ----- status changes (linked issues only) -----
+  const who = (context.payload.sender && context.payload.sender.login) || 'Someone';
+  const changedLabel = context.payload.label ? context.payload.label.name.toLowerCase() : '';
+  if (key && STATUS_LABELS.includes(changedLabel) && (action === 'labeled' || action === 'unlabeled')) {
+    if (action === 'labeled') await setStatusLabel(github, owner, repo, issue, changedLabel); // the two labels replace each other
+    const st = await applyStatus(owner, issue, key, `${who} ${action === 'labeled' ? 'added' : 'removed'} the "${changedLabel}" label`);
+    return core.info(`${key} -> ${STATUS_NAMES[st]} (${action} ${changedLabel})`);
+  }
+  if (key && action === 'assigned') {
+    if (issue.state === 'open' && !labelNames(issue).some((l) => STATUS_LABELS.includes(l))) {
+      await setStatusLabel(github, owner, repo, issue, LABEL_IN_PROGRESS);
+    }
+    const st = await applyStatus(owner, issue, key, `${who} assigned ${context.payload.assignee ? context.payload.assignee.login : 'someone'}`);
+    return core.info(`${key} -> ${STATUS_NAMES[st]} (assigned)`);
+  }
+  if (key && action === 'closed') {
+    const st = await applyStatus(owner, issue, key, `${who} closed the issue`);
+    return core.info(`${key} -> ${STATUS_NAMES[st]} (closed)`);
+  }
+  if (key && action === 'reopened') {
+    await setStatusLabel(github, owner, repo, issue, LABEL_IN_PROGRESS);
+    const st = await applyStatus(owner, issue, key, `${who} reopened the issue`);
+    return core.info(`${key} -> ${STATUS_NAMES[st]} (reopened)`);
   }
 
   if (action === 'opened' || action === 'labeled' || (action === 'edited' && !key)) {
@@ -203,6 +285,7 @@ async function onIssue({ github, context, core }) {
         (startDate && dueDate ? `\n\nOn the Gantt chart: ${startDate} → ${dueDate}` :
           '\n\n⚠️ No start/due date, so it will be in "unscheduled issues" until dates are added.'),
     });
+    if (board) await board.setItem(owner, issue.node_id, STATUS.OPEN, startDate, dueDate);
     return core.info(`Created ${newKey} in ${p.projectKey}`);
   }
 
@@ -223,15 +306,8 @@ async function onIssue({ github, context, core }) {
       }
     }
     await backlog('PATCH', `/issues/${key}`, changes);
+    if (board) await board.setItem(owner, issue.node_id, null, startDate, dueDate);
     return core.info(`Updated ${key}`);
-  }
-  if (action === 'closed') {
-    await backlog('PATCH', `/issues/${key}`, { statusId: STATUS.CLOSED });
-    return core.info(`Closed ${key}`);
-  }
-  if (action === 'reopened') {
-    await backlog('PATCH', `/issues/${key}`, { statusId: STATUS.IN_PROGRESS });
-    return core.info(`Reopened ${key}`);
   }
 }
 
@@ -244,6 +320,7 @@ async function onPush({ github, context, core }) {
   const branch = (context.payload.ref || '').replace('refs/heads/', '');
   const byKey = new Map();
   const titleCache = new Map();
+  const numberOfKey = new Map(); // Backlog key -> GitHub issue number
 
   for (const c of commits) {
     const keys = new Set(c.message.match(keysRe) || []);
@@ -255,21 +332,38 @@ async function onPush({ github, context, core }) {
         } catch { titleCache.set(num, ''); }
       }
       const k = backlogKeyFromTitle(titleCache.get(num));
-      if (k) keys.add(k);
+      if (k) { keys.add(k); numberOfKey.set(k, Number(num)); }
     }
     keys.forEach((k) => byKey.set(k, [...(byKey.get(k) || []), c]));
   }
 
   if (byKey.size === 0) return core.info('No linked issues in these commits');
 
+  // Keys written without "#n": find their GitHub issue by title
+  if ([...byKey.keys()].some((k) => !numberOfKey.has(k))) {
+    const all = await github.paginate(github.rest.issues.listForRepo, { owner, repo, state: 'all', per_page: 100 });
+    for (const i of all) {
+      const k = backlogKeyFromTitle(i.title);
+      if (k && byKey.has(k) && !numberOfKey.has(k) && !i.pull_request) numberOfKey.set(k, i.number);
+    }
+  }
+
   for (const [key, list] of byKey) {
     const lines = list.map((c) => `- [${c.message.split('\n')[0]}](${c.url}) (${c.id.slice(0, 7)})`);
     await backlog('POST', `/issues/${key}/comments`, {
       content: `${list[0].author.name} pushed to GitHub \`${branch}\`:\n${lines.join('\n')}`,
     });
-    const current = await backlog('GET', `/issues/${key}`);
-    if (current.status.id === STATUS.OPEN) {
-      await backlog('PATCH', `/issues/${key}`, { statusId: STATUS.IN_PROGRESS });
+    const num = numberOfKey.get(key);
+    if (num) {
+      // Work has started: an open issue with no status label gets "in-progress"
+      const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: num });
+      if (issue.state === 'open' && !labelNames(issue).some((l) => STATUS_LABELS.includes(l))) {
+        await setStatusLabel(github, owner, repo, issue, LABEL_IN_PROGRESS);
+        await applyStatus(owner, issue, key, `${list[0].author.name} pushed a commit`);
+      }
+    } else {
+      const current = await backlog('GET', `/issues/${key}`);
+      if (current.status.id === STATUS.OPEN) await backlog('PATCH', `/issues/${key}`, { statusId: STATUS.IN_PROGRESS });
     }
     core.info(`Commented on ${key}`);
   }
@@ -282,6 +376,7 @@ async function onPush({ github, context, core }) {
 async function onImport({ github, context, core }) {
   const { owner, repo } = context.repo;
   const projects = loadProjects();
+  await ensureStatusLabels(github, owner, repo);
   const existing = await github.paginate(github.rest.issues.listForRepo, { owner, repo, state: 'all', per_page: 100 });
   const linked = new Set(existing.map((i) => backlogKeyFromTitle(i.title)).filter(Boolean));
   const day = (d) => (d ? d.slice(0, 10) : '');
@@ -305,20 +400,54 @@ async function onImport({ github, context, core }) {
         body: `### Project\n\n${name}\n\n### Start date\n\n${day(b.startDate)}\n\n### Due date\n\n${day(b.dueDate)}\n\n` +
           `### Details\n\n${b.description || ''}\n\nBacklog: https://${HOST}/view/${b.issueKey}`,
       });
-      if (b.status && b.status.id === STATUS.CLOSED) {
-        await github.rest.issues.update({ owner, repo, issue_number: data.number, state: 'closed' });
-      }
+      const st = b.status ? b.status.id : STATUS.OPEN;
+      if (st === STATUS.CLOSED) await github.rest.issues.update({ owner, repo, issue_number: data.number, state: 'closed' });
+      else if (st === STATUS.IN_PROGRESS) await setStatusLabel(github, owner, repo, data, LABEL_IN_PROGRESS);
+      else if (st === STATUS.RESOLVED) await setStatusLabel(github, owner, repo, data, LABEL_RESOLVED);
+      if (board) await board.setItem(owner, data.node_id, st, day(b.startDate), day(b.dueDate));
       made++;
     }
     core.info(`${name} (${p.projectKey}): ${made} imported, ${items.length - made} already in GitHub`);
   }
 }
 
+// ---------- one-time: create the GitHub Projects board and fill it ----------
+// Every linked issue goes on the board. Backlog's current status decides the column,
+// and open GitHub issues get the matching status label so both sides agree.
+async function onSetupBoard({ github, context, core }) {
+  const { owner, repo } = context.repo;
+  if (!board) throw new Error('Missing secret PROJECT_TOKEN (a classic GitHub token with the "repo" and "project" scopes)');
+  await ensureStatusLabels(github, owner, repo);
+  const url = await board.setup(owner, context.payload.repository.node_id);
+  const all = await github.paginate(github.rest.issues.listForRepo, { owner, repo, state: 'all', per_page: 100 });
+  let n = 0;
+  for (const issue of all) {
+    const key = backlogKeyFromTitle(issue.title);
+    if (!key || issue.pull_request) continue;
+    let b;
+    try { b = await backlog('GET', `/issues/${key}`); } catch (e) { core.info(`${key}: not in Backlog, skipped`); continue; }
+    const st = b.status.id;
+    if (issue.state === 'open') {
+      const want = st === STATUS.IN_PROGRESS ? LABEL_IN_PROGRESS : st === STATUS.RESOLVED ? LABEL_RESOLVED : null;
+      if (st !== STATUS.CLOSED) await setStatusLabel(github, owner, repo, issue, want);
+    }
+    const day = (d) => (d ? d.slice(0, 10) : '');
+    await board.setItem(owner, issue.node_id, st, readDate(issue.body, 'Start date') || day(b.startDate), readDate(issue.body, 'Due date') || day(b.dueDate));
+    n++;
+  }
+  core.info(`Board ready with ${n} issues: ${url}`);
+  core.info('Last step (in the browser): open the board, add a "Board" view and a "Roadmap" view.');
+}
+
 module.exports = async function sync(ctx) {
   if (!API_KEY) throw new Error('Missing secret BACKLOG_API_KEY');
+  board = makeBoard(ctx);
   const ev = ctx.context.eventName;
-  if (ev === 'workflow_dispatch') return onImport(ctx);
+  if (ev === 'workflow_dispatch') {
+    const mode = (ctx.context.payload.inputs && ctx.context.payload.inputs.mode) || 'import';
+    return mode === 'setup-board' ? onSetupBoard(ctx) : onImport(ctx);
+  }
   if (ev === 'issues') return onIssue(ctx);
   if (ev === 'push') return onPush(ctx);
 };
-module.exports._test = { readField, readDate, backlogKeyFromTitle, stripKey, pickProject };
+module.exports._test = { readField, readDate, backlogKeyFromTitle, stripKey, pickProject, desiredStatus };
